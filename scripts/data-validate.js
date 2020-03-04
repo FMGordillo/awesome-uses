@@ -1,34 +1,43 @@
-import Joi from '@hapi/joi';
-import core from '@actions/core';
-import data from '../src/data.js';
-import flags from './flags.js';
+const core = require('@actions/core');
+const {
+  getMasterData,
+  Schema,
+  getStatusCode,
+  communicateValidationOutcome,
+} = require('./utils.js');
+const srcData = require('../src/data.js');
 
-const schema = Joi.object({
-  name: Joi.string().required(),
-  description: Joi.string().required(),
-  url: Joi.string()
-    .uri()
-    .required(),
-  country: Joi.string()
-    .valid(...flags)
-    .required(),
-  twitter: Joi.string().pattern(new RegExp(/^@?(\w){1,15}$/)),
-  emoji: Joi.string().allow(''),
-  computer: Joi.string().valid('apple', 'windows', 'linux'),
-  phone: Joi.string().valid('iphone', 'android'),
-  tags: Joi.array().items(Joi.string()),
-});
+async function main() {
+  // on master branch will be empty array
+  const masterDataUrls = (await getMasterData()).map(d => d.url);
+  // so here data will be an array with all users
+  const data = srcData.filter(d => !masterDataUrls.includes(d.url));
 
-const errors = data
-  .map(person => schema.validate(person))
-  .filter(v => v.error)
-  .map(v => v.error);
+  const errors = data
+    .map(person => Schema.validate(person))
+    .filter(v => v.error)
+    .map(v => v.error);
 
-errors.forEach(e => {
-  core.error(e._original.name);
-  e.details.forEach(d => core.error(d.message));
-});
+  errors.forEach(e => {
+    core.error(e._original.name || e._original.url);
+    e.details.forEach(d => core.error(d.message));
+  });
 
-if (errors.length) {
-  core.setFailed('Action failed with validation errors, see logs');
+  const failedUrls = [];
+  for (const { url } of data) {
+    try {
+      const statusCode = await getStatusCode(url);
+      if (statusCode < 200 || statusCode >= 400) {
+        core.error(`Ping to "${url}" failed with status: ${statusCode}`);
+        failedUrls.push(url);
+      }
+    } catch (e) {
+      core.error(`Ping to "${url}" failed with error: ${e}`);
+      failedUrls.push(url);
+    }
+  }
+
+  await communicateValidationOutcome(errors, failedUrls, data);
 }
+
+main();
